@@ -8,7 +8,7 @@ from onnxsim.onnx_simplifier import simplify
 
 
 class ImageEncoder(nn.Module):
-    def __init__(self, clip_model: CLIPModel, input_ids=None):
+    def __init__(self, clip_model: CLIPModel, input_ids):
         super().__init__()
         self.input_ids = input_ids
         # self.vision_model = clip_model.vision_model
@@ -22,20 +22,20 @@ class ImageEncoder(nn.Module):
         # image_embedding = self.vision_model(pixel_values)[1]
         # image_embedding = self.visual_projection(image_embedding)
         image_embeds = self.model.get_image_features(pixel_values)
-        if self.input_ids is None:
-            return image_embeds
-        else:
-            # text_embedding = self.text_model(self.input_ids)[1]
-            # text_embedding = self.text_projection(text_embedding)
-            text_embeds = self.model.get_text_features(self.input_ids)
+        # if self.input_ids is None:
+        #     return image_embeds
+        # else:
+        #     # text_embedding = self.text_model(self.input_ids)[1]
+        #     # text_embedding = self.text_projection(text_embedding)
+        text_embeds = self.model.get_text_features(self.input_ids)
 
-            # normalized features
-            image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
-            text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
+        # normalized features
+        image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
+        text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
 
-            logit_scale = self.logit_scale.exp()
-            logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
-            return logits_per_text.t()
+        logit_scale = self.logit_scale.exp()
+        logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
+        return logits_per_text.t()
 
 
 model = CLIPModel.from_pretrained("./models/openai/clip-vit-base-patch32")
@@ -44,8 +44,8 @@ processor = CLIPProcessor.from_pretrained("./models/openai/clip-vit-base-patch32
 image = Image.open("./CLIP.png")
 texts = ["a diagram", "a dog", "a cat"]
 
-image_encoder = ImageEncoder(model)
-image_encoder.eval()
+# image_encoder = ImageEncoder(model)
+# image_encoder.eval()
 # text_encoder = model.text_model
 
 input_ = processor(text=texts, images=image, return_tensors="pt")
@@ -67,24 +67,25 @@ input_ids = input_.input_ids
 
 image_encoder_with_texts = ImageEncoder(model, input_ids)
 image_encoder_with_texts.eval()
-
+traced_model = torch.jit.trace(image_encoder_with_texts, example_inputs=pixel_values)
 # 导出image_onnx_with_texts模型
 torch.onnx.export(
-    image_encoder_with_texts,
+    traced_model,
     pixel_values,
-    "./onnx/image_onnx_with_text.onnx",
+    "./onnx/image_onnx_with_text_jit.onnx",
     opset_version=13,
     do_constant_folding=True,
     input_names=["pixel_values"],
     output_names=["logit"],
-    dynamic_axes={"pixel_values": {0: "batch_size"}, "logit": {0: "batch_size"}},
+    # dynamic_axes={"pixel_values": {0: "batch_size"}, "logit": {0: "batch_size"}},
 )
-
+print("finished exporting onnx")
 
 ## 简化模型
 
-onnx_model = onnx.load("./onnx/image_onnx_with_text.onnx")
+onnx_model = onnx.load("./onnx/image_onnx_with_text_jit.onnx")
+onnx.checker.check_model(onnx_model)
 simplified_onnx, check = simplify(onnx_model)
 assert check, "Simplified ONNX model could not be validated"
-onnx.save(simplified_onnx, "./onnx/image_onnx_with_text_smi.onnx")
-print("finished exporting onnx")
+onnx.save(simplified_onnx, "./onnx/image_onnx_with_text_jit_smi.onnx")
+print("finished exporting onnx_smi")
